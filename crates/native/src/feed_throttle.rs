@@ -389,4 +389,32 @@ mod tests {
         std::fs::write(&file, br#"{"not_before": -60, "throttles": 1}"#).unwrap();
         assert_eq!(FeedThrottle::load(&file, NOW).wait(NOW), 0);
     }
+
+    #[test]
+    fn an_absurdly_late_saved_not_before_is_no_wait_but_a_sane_one_stands() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("feed-throttle.json");
+        std::fs::write(&file, br#"{"not_before": 9223372036854775807, "throttles": 1}"#).unwrap();
+        assert_eq!(FeedThrottle::load(&file, NOW).wait(NOW), 0);
+        std::fs::write(&file, format!(r#"{{"not_before": {}, "throttles": 1}}"#, NOW + 600)).unwrap();
+        let t = FeedThrottle::load(&file, NOW);
+        assert_eq!(t.wait(NOW), 600);
+        assert!(t.throttled(NOW));
+    }
+
+    #[test]
+    fn saved_counts_at_their_maximum_cap_the_backoff_without_overflowing() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("feed-throttle.json");
+        let saved = format!(r#"{{"failures": {m}, "throttles": {m}}}"#, m = u32::MAX);
+        std::fs::write(&file, &saved).unwrap();
+        let mut t = FeedThrottle::load(&file, NOW);
+        t.warmed = true;
+        t.finished(Outcome::Failed { retry_after: None }, NOW, 0.5);
+        assert_eq!(t.wait(NOW), MAX_FAILURE_BACKOFF);
+        std::fs::write(&file, &saved).unwrap();
+        let mut t = FeedThrottle::load(&file, NOW);
+        t.finished(Outcome::Throttled { retry_after: None }, NOW, 0.0);
+        assert_eq!(t.wait(NOW), MAX_THROTTLE_BACKOFF);
+    }
 }
